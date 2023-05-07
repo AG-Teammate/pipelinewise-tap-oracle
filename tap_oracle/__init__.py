@@ -22,6 +22,7 @@ import tap_oracle.db as orc_db
 import tap_oracle.sync_strategies.log_miner as log_miner
 import tap_oracle.sync_strategies.full_table as full_table
 import tap_oracle.sync_strategies.incremental as incremental
+import tap_oracle.sync_strategies.incremental_date_step as incremental_date_step
 import tap_oracle.sync_strategies.common as common
 LOGGER = singer.get_logger()
 
@@ -466,6 +467,25 @@ def do_sync_incremental(conn_config, stream, state, desired_columns):
 
    return state
 
+def do_sync_incremental_date_step(conn_config, stream, state, desired_columns):
+   md_map = metadata.to_map(stream.metadata)
+   replication_key = md_map.get((), {}).get('replication-key')
+   if not replication_key:
+      raise Exception("No replication key selected for key-based incremental date step replication")
+   LOGGER.info("Stream %s is using incremental date step replication with replication key %s", stream.tap_stream_id, replication_key)
+
+   # make sure state has required keys for incremental stream
+   stream_state = state.get('bookmarks', {}).get(stream.tap_stream_id)
+   illegal_bk_keys = set(stream_state.keys()).difference(set(['replication_key', 'replication_key_value', 'version', 'last_replication_method']))
+   if len(illegal_bk_keys) != 0:
+      raise Exception("invalid keys found in state: {}".format(illegal_bk_keys))
+
+   state = singer.write_bookmark(state, stream.tap_stream_id, 'replication_key', replication_key)
+
+   common.send_schema_message(stream, [replication_key])
+   state = incremental_date_step.sync_table(conn_config, stream, state, desired_columns)
+
+   return state
 
 def clear_state_on_replication_change(state, tap_stream_id, replication_key, replication_method):
    #user changed replication, nuke state
@@ -474,7 +494,7 @@ def clear_state_on_replication_change(state, tap_stream_id, replication_key, rep
       state = singer.reset_stream(state, tap_stream_id)
 
    #key changed
-   if replication_method == 'INCREMENTAL':
+   if replication_method in set(['INCREMENTAL', 'INCREMENTAL_DATE_STEP']):
       if replication_key != singer.get_bookmark(state, tap_stream_id, 'replication_key'):
          state = singer.reset_stream(state, tap_stream_id)
 
@@ -493,7 +513,7 @@ def sync_method_for_streams(streams, state, default_replication_method):
 
       state = clear_state_on_replication_change(state, stream.tap_stream_id, replication_key, replication_method)
 
-      if replication_method not in set(['LOG_BASED', 'FULL_TABLE', 'INCREMENTAL']):
+      if replication_method not in set(['LOG_BASED', 'FULL_TABLE', 'INCREMENTAL', 'INCREMENTAL_DATE_STEP']):
          raise Exception("Unrecognized replication_method {}".format(replication_method))
 
       if replication_method == 'LOG_BASED' and stream_metadata.get((), {}).get('is-view'):
@@ -529,6 +549,9 @@ def sync_method_for_streams(streams, state, default_replication_method):
             #initial stage of LogMiner(full-table) has been completed. moving onto pure LogMiner
             lookup[stream.tap_stream_id] = 'pure_log'
             logical_streams.append(stream)
+      elif replication_method == 'INCREMENTAL_DATE_STEP':
+         lookup[stream.tap_stream_id] = 'incremental_date_step'
+         traditional_streams.append(stream)
       else:
          # Incremental replication
          lookup[stream.tap_stream_id] = 'incremental'
@@ -574,6 +597,9 @@ def sync_traditional_stream(conn_config, stream, state, sync_method, end_scn):
       state = singer.set_currently_syncing(state, stream.tap_stream_id)
       common.send_schema_message(stream, [])
       state = full_table.sync_table(conn_config, stream, state, desired_columns)
+   elif sync_method == 'incremental_date_step':
+      state = singer.set_currently_syncing(state, stream.tap_stream_id)
+      state = do_sync_incremental_date_step(conn_config, stream, state, desired_columns)
    elif sync_method == 'incremental':
       state = singer.set_currently_syncing(state, stream.tap_stream_id)
       state = do_sync_incremental(conn_config, stream, state, desired_columns)
@@ -653,10 +679,12 @@ def main_impl():
    if args.config.get('cursor_array_size'):
       full_table.BATCH_SIZE = int(args.config.get('cursor_array_size'))
       incremental.BATCH_SIZE = int(args.config.get('cursor_array_size'))
+      incremental_date_step.BATCH_SIZE = int(args.config.get('cursor_array_size'))
       log_miner.BATCH_SIZE = int(args.config.get('cursor_array_size'))
    full_table.USE_ORA_ROWSCN = bool(args.config.get('use_ora_rowscn', True))
    use_singer_decimal = bool(args.config.get('use_singer_decimal', False))
    incremental.OFFSET_VALUE = args.config.get('offset_value',0)
+   incremental_date_step.OFFSET_VALUE = args.config.get('offset_value', 0)
 
 
    if args.discover:
