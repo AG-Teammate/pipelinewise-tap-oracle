@@ -111,10 +111,11 @@ def sync_table(conn_config, stream, state, desired_columns):
 
             LOGGER.info("Date step loop finished")
 
-            state = singer.write_bookmark(state,
-                                          stream.tap_stream_id,
-                                          'replication_key_value',
-                                          step_end_d.strftime(dateformat))  # set state to the end of the interval
+            if step_end_d < now:
+                state = singer.write_bookmark(state,
+                                              stream.tap_stream_id,
+                                              'replication_key_value',
+                                              step_end_d.strftime(dateformat))  # set state to the end of the interval
 
             singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
