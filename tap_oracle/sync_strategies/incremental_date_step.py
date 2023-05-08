@@ -57,7 +57,7 @@ def sync_table(conn_config, stream, state, desired_columns):
     md = metadata.to_map(stream.metadata)
     schema_name = md.get(()).get('schema-name')
 
-    escaped_columns = map(lambda c: common.prepare_columns_sql(stream, c), desired_columns)
+    escaped_columns = list(map(lambda c: common.prepare_columns_sql(stream, c), desired_columns))
     escaped_schema = schema_name
     escaped_table = stream.table
 
@@ -90,7 +90,7 @@ def sync_table(conn_config, stream, state, desired_columns):
                                                                       replication_key_sql_datatype)
             casted_where_clause_arg2 = common.prepare_where_clause_arg(step_end_d.strftime(dateformat),
                                                                        replication_key_sql_datatype)
-            select_sql = f"""SELECT {','.join(escaped_columns)}
+            select_sql = f"""SELECT /*+ PARALLEL */ {','.join(escaped_columns)}
                                 FROM {escaped_schema}.{escaped_table}
                                WHERE {replication_key} >= {casted_where_clause_arg} + {typed_offset_value}
                                AND {replication_key} <= {casted_where_clause_arg2}
