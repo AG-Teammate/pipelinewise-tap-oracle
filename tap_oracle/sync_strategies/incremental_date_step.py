@@ -12,7 +12,7 @@ import time
 import decimal
 import cx_Oracle
 import datetime as dt
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytimeparse
 
 LOGGER = singer.get_logger()
@@ -27,6 +27,7 @@ BATCH_SIZE = 1000
 def sync_table(conn_config, stream, state, desired_columns):
     connection = orc_db.open_connection(conn_config)
     connection.outputtypehandler = common.OutputTypeHandler
+    dateformat = '%Y-%m-%dT%H:%M:%S.00+00:00'
 
     cur = connection.cursor()
     cur.arraysize = BATCH_SIZE
@@ -76,17 +77,19 @@ def sync_table(conn_config, stream, state, desired_columns):
 
         while True:
             replication_key_value = singer.get_bookmark(state, stream.tap_stream_id, 'replication_key_value')
-            step_start_d = datetime.fromisoformat(replication_key_initial_value)
+            step_start_d = datetime.strptime(replication_key_initial_value, dateformat)
             if replication_key_value:
-                step_start_d = datetime.fromisoformat(replication_key_value)
+                step_start_d = datetime.strptime(replication_key_value, dateformat)
 
-            step_end_d = step_start_d + datetime.timedelta(seconds=pytimeparse.parse())
+            step_end_d = step_start_d + timedelta(seconds=pytimeparse.parse(date_step_value))
             LOGGER.info(
-                f"Performing Incremental Date Step replication from {replication_key} = {step_start_d.isoformat()} + {typed_offset_value} to {step_end_d.isoformat()}")
+                f"Performing Incremental Date Step replication from {replication_key} = {step_start_d.strftime(dateformat)} + {typed_offset_value} to {step_end_d.isoformat()}")
 
             now = datetime.now()
-            casted_where_clause_arg = common.prepare_where_clause_arg(step_start_d, replication_key_sql_datatype)
-            casted_where_clause_arg2 = common.prepare_where_clause_arg(step_end_d, replication_key_sql_datatype)
+            casted_where_clause_arg = common.prepare_where_clause_arg(step_start_d.strftime(dateformat),
+                                                                      replication_key_sql_datatype)
+            casted_where_clause_arg2 = common.prepare_where_clause_arg(step_end_d.strftime(dateformat),
+                                                                       replication_key_sql_datatype)
             select_sql = f"""SELECT {','.join(escaped_columns)}
                                 FROM {escaped_schema}.{escaped_table}
                                WHERE {replication_key} >= {casted_where_clause_arg} + {typed_offset_value}
@@ -104,18 +107,16 @@ def sync_table(conn_config, stream, state, desired_columns):
                 singer.write_message(record_message)
                 rows_saved = rows_saved + 1
 
-                # Picking a replication_key with NULL values will result in it ALWAYS been synced which is not great
-                # event worse would be allowing the NULL value to enter into the state
-                if record_message.record[replication_key] is not None:
-                    state = singer.write_bookmark(state,
-                                                  stream.tap_stream_id,
-                                                  'replication_key_value',
-                                                  record_message.record[replication_key])
-
-                if rows_saved % UPDATE_BOOKMARK_PERIOD == 0:
-                    singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
-
                 counter.increment()
+
+            LOGGER.info("Date step loop finished")
+
+            state = singer.write_bookmark(state,
+                                          stream.tap_stream_id,
+                                          'replication_key_value',
+                                          step_end_d.strftime(dateformat))  # set state to the end of the interval
+
+            singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
             if step_start_d >= now:
                 LOGGER.info("Date step is in the future, stopping the sync")
