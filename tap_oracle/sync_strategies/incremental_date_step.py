@@ -97,10 +97,13 @@ def sync_table(conn_config, stream, state, desired_columns):
                                                                       replication_key_sql_datatype)
             casted_where_clause_arg2 = common.prepare_where_clause_arg(step_end_d.strftime(dateformat),
                                                                        replication_key_sql_datatype)
+
+            date_cond = f"{replication_key} BETWEEN {casted_where_clause_arg} AND {casted_where_clause_arg2}"
+            if isinstance(replication_key, list):
+                date_cond = ' OR '.join(map(lambda s: f"{s} BETWEEN {casted_where_clause_arg} AND {casted_where_clause_arg2}", replication_key))
             select_sql = f"""SELECT /*+ PARALLEL */ {','.join(escaped_columns)}
                                 FROM {escaped_schema}.{escaped_table}
-                                WHERE {replication_key} >= {casted_where_clause_arg} + {typed_offset_value}
-                                AND {replication_key} <= {casted_where_clause_arg2}
+                                WHERE ({date_cond})
                                 {additional_where_clause}
                                 """
 
