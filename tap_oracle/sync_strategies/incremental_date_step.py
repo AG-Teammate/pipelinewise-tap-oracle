@@ -65,7 +65,14 @@ def sync_table(conn_config, stream, state, desired_columns):
     replication_key_initial_value = md.get((), {}).get('replication-key-initial-value')
     date_step_value = md.get((), {}).get('date-step-value')
     # escaped_replication_key = common.prepare_columns_sql(stream, replication_key)
-    replication_key_sql_datatype = md.get(('properties', replication_key)).get('sql-datatype')
+    replication_key_sql_datatype = md.get((), {}).get('replication-key-sql-datatype')
+    if replication_key_sql_datatype is None:
+        replication_key_sql_datatype = md.get(('properties', replication_key)).get('sql-datatype')
+    additional_where_clause = md.get((), {}).get('additional-where-clause')
+    if additional_where_clause is not None:
+        additional_where_clause = "AND (" + additional_where_clause + ")"
+    else:
+        additional_where_clause = ""
 
     typed_offset_value = OFFSET_VALUE
     LOGGER.info(f"{replication_key_sql_datatype=}")
@@ -92,8 +99,9 @@ def sync_table(conn_config, stream, state, desired_columns):
                                                                        replication_key_sql_datatype)
             select_sql = f"""SELECT /*+ PARALLEL */ {','.join(escaped_columns)}
                                 FROM {escaped_schema}.{escaped_table}
-                               WHERE {replication_key} >= {casted_where_clause_arg} + {typed_offset_value}
-                               AND {replication_key} <= {casted_where_clause_arg2}
+                                WHERE {replication_key} >= {casted_where_clause_arg} + {typed_offset_value}
+                                AND {replication_key} <= {casted_where_clause_arg2}
+                                {additional_where_clause}
                                 """
 
             LOGGER.info("select %s", select_sql)
@@ -119,7 +127,7 @@ def sync_table(conn_config, stream, state, desired_columns):
 
             singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
-            if step_start_d >= now:
+            if step_end_d >= now:
                 LOGGER.info("Date step is in the future, stopping the sync")
                 break
 
