@@ -20,7 +20,8 @@ setup(name='pipelinewise-tap-oracle',
           'pipelinewise-singer-python @ git+https://github.com/mjsqu/pipelinewise-singer-python',
           'cx_Oracle==8.3',
           'strict-rfc3339==0.7',
-          'pytimeparse==1.1.8'
+          'pytimeparse==1.1.8',
+          'Jinja2==3.1.2'
       ],
       entry_points='''
           [console_scripts]
