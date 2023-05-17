@@ -14,6 +14,7 @@ import cx_Oracle
 import datetime as dt
 from datetime import datetime, timedelta
 import pytimeparse
+import jinja2
 
 LOGGER = singer.get_logger()
 
@@ -22,6 +23,8 @@ UPDATE_BOOKMARK_PERIOD = 1000
 OFFSET_VALUE = 0
 
 BATCH_SIZE = 1000
+
+jinjaenv = jinja2.Environment(loader=jinja2.FileSystemLoader('./'))
 
 
 def sync_table(conn_config, stream, state, desired_columns):
@@ -64,6 +67,7 @@ def sync_table(conn_config, stream, state, desired_columns):
     replication_key = md.get((), {}).get('replication-key')
     replication_key_initial_value = md.get((), {}).get('replication-key-initial-value')
     date_step_value = md.get((), {}).get('date-step-value')
+    custom_query_file = md.get((), {}).get('custom-query-file')
     # escaped_replication_key = common.prepare_columns_sql(stream, replication_key)
     replication_key_sql_datatype = md.get((), {}).get('replication-key-sql-datatype')
     if replication_key_sql_datatype is None:
@@ -100,12 +104,21 @@ def sync_table(conn_config, stream, state, desired_columns):
 
             date_cond = f"{replication_key} BETWEEN {casted_where_clause_arg} AND {casted_where_clause_arg2}"
             if isinstance(replication_key, list):
-                date_cond = ' OR '.join(map(lambda s: f"{s} BETWEEN {casted_where_clause_arg} AND {casted_where_clause_arg2}", replication_key))
+                date_cond = ' OR '.join(
+                    map(lambda s: f"{s} BETWEEN {casted_where_clause_arg} AND {casted_where_clause_arg2}",
+                        replication_key))
             select_sql = f"""SELECT /*+ PARALLEL */ {','.join(escaped_columns)}
                                 FROM {escaped_schema}.{escaped_table}
                                 WHERE ({date_cond})
                                 {additional_where_clause}
                                 """
+
+            if custom_query_file is not None:
+                tpl = jinjaenv.get_template(custom_query_file)
+                select_sql = tpl.render(additional_where_clause=additional_where_clause,
+                                        escaped_columns=escaped_columns, escaped_schema=escaped_schema,
+                                        escaped_table=escaped_table, date_cond=date_cond,
+                                        date_start=casted_where_clause_arg, date_end=casted_where_clause_arg2)
 
             LOGGER.info("select %s", select_sql)
             for row in cur.execute(select_sql):
